@@ -5,3 +5,14 @@ configs/keys.ini
 # dont commit venv and ide stuff
 venv
 .idea
+_site/
+.sass-cache/
+.jekyll-cache/
+.jekyll-metadata
+.DS_Store
+*.sublime-workspace
+*.sublime-project
+*__pycache__*
+condor_logs/
+*.sb
+Gemfile.lock
