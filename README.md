@@ -26,8 +26,13 @@ To use Llama-70B, make sure that you have over 257GB of GPU memory in total.
 
 ## Deployment
 
-As long as you **fork** this repo, in intuition, Github would deploy a website for you. The link
-is `https://<your_github_username>.github.io/llama_paper_assistant/`. You can also change the name of the repo so that
+First of all, you need to fork this repo in Github. 
+Then go to `Settings` -> `Pages` -> `Source` and select `Github Actions`.
+
+Now, in intuition, Github should deploy a website for you. 
+The link
+is `https://<your_github_username>.github.io/llama_paper_assistant/`. 
+You can also change the name of the repo and 
 the link would also change.
 Everytime you run `main.py`, the resulted recommendations would be directly added to `_posts`.
 In order to publish the new posts, you just need to add the new posts to the git repo and push it to the remote repo.
