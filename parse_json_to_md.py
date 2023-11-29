@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+import pytz
 
 
 def render_paper(paper_entry: dict, idx: int) -> str:
@@ -46,14 +47,19 @@ def render_md_string(papers_dict):
     # header
     with open("configs/paper_topics.txt", "r") as f:
         criterion = f.read()
+    tz = pytz.timezone('Europe/Berlin')  # use your desired timezone
+    now = datetime.now(tz)
     output_string = (
-        "# Personalized Daily Arxiv Papers "
-        + datetime.today().strftime("%m/%d/%Y")
-        + "\nTotal relevant papers: "
-        + str(len(papers_dict))
-        + "\n\n"
-        + "Paper selection prompt and criteria at the bottom\n\n"
-        + "Table of contents with paper titles:\n\n"
+            "---\n"
+            + "layout: post\n"
+            + "title: Daily Papers %s\n" % datetime.today().strftime("%Y-%m-%d")
+            + "date: %s\n" % now.strftime("%Y-%m-%d %H:%M:%S %z")
+            + "---\n"
+            + "Total relevant papers: "
+            + str(len(papers_dict))
+            + "\n\n"
+            + "Paper selection prompt and criteria at the bottom\n\n"
+            + "Table of contents with paper titles:\n\n"
     )
     title_strings = [
         render_title_and_author(paper, i)

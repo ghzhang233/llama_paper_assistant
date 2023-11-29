@@ -16,7 +16,7 @@ T = TypeVar("T")
 
 def batched(items: list[T], batch_size: int) -> list[T]:
     # takes a list and returns a list of list with batch_size
-    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+    return [items[i: i + batch_size] for i in range(0, len(items), batch_size)]
 
 
 def send_main_message(block_list: List, channel_id, client):
@@ -75,13 +75,13 @@ def render_paper(paper_entry: Paper, counter: int) -> str:
     # get the authors
     authors = paper_entry["authors"]
     paper_string = (
-        "<"
-        + arxiv_url
-        + "|*"
-        + str(counter)
-        + ". "
-        + title.replace("&", "&amp;")
-        + "*>\n"
+            "<"
+            + arxiv_url
+            + "|*"
+            + str(counter)
+            + ". "
+            + title.replace("&", "&amp;")
+            + "*>\n"
     )
     paper_string += f'*Authors*: {", ".join(authors)}\n\n'
     paper_string += f"*Abstract*: {abstract}\n\n"
@@ -114,13 +114,13 @@ def render_title(paper_entry: Paper, counter: int) -> str:
     # get the authors
     authors = paper_entry["authors"]
     paper_string = (
-        "<"
-        + arxiv_url
-        + "|*"
-        + str(counter)
-        + ". "
-        + title.replace("&", "&amp;")
-        + "*>\n"
+            "<"
+            + arxiv_url
+            + "|*"
+            + str(counter)
+            + ". "
+            + title.replace("&", "&amp;")
+            + "*>\n"
     )
     paper_string += f'*Authors*: {", ".join(authors)}\n\n'
     return paper_string
@@ -136,7 +136,7 @@ def build_block_list(title_strings, paper_strings):
             "text": {
                 "type": "plain_text",
                 "text": "Paper alert bot update on "
-                + datetime.today().strftime("%m/%d/%Y"),
+                        + datetime.today().strftime("%m/%d/%Y"),
             },
         },
         {
@@ -144,8 +144,8 @@ def build_block_list(title_strings, paper_strings):
             "text": {
                 "type": "mrkdwn",
                 "text": "Total relevant papers (max 50 in thread): "
-                + str(len(title_strings))
-                + "\n Top 10 titles shown below",
+                        + str(len(title_strings))
+                        + "\n Top 10 titles shown below",
             },
         },
         {"type": "divider"},

@@ -7,11 +7,15 @@ from collections import defaultdict
 from typing import List
 
 import retry
+import torch
 from openai import OpenAI
 from tqdm import tqdm
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
-from arxiv_scraper import Paper
 from arxiv_scraper import EnhancedJSONEncoder
+from arxiv_scraper import Paper
+
+OAI_KEY = os.environ.get("OAI_KEY")
 
 
 def filter_by_author(all_authors, papers, author_targets, config):
@@ -74,6 +78,71 @@ def call_chatgpt(full_prompt, openai_client, model, num_samples):
     )
 
 
+class LLaMaModel:
+    def __init__(self, model_name="Llama-2-7b-chat-hf", max_tokens=None):
+        self.model = AutoModelForCausalLM.from_pretrained("meta-llama/" + model_name, device_map="auto")
+        self.model.eval()
+        self.tokenizer = AutoTokenizer.from_pretrained("meta-llama/" + model_name)
+        self.max_tokens = max_tokens
+
+    def get_response(self, prompt, num_response=1, do_sample=False):
+        if not do_sample and num_response > 1:
+            num_response = 1
+        with torch.no_grad():
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            generate_ids = self.model.generate(inputs.input_ids.to(self.model.device), max_new_tokens=self.max_tokens)
+            ret = []
+            for _ in range(num_response):
+                generated_text = self.tokenizer.batch_decode(
+                    generate_ids[:, inputs.input_ids.shape[1]:],
+                    skip_special_tokens=True,
+                    do_sample=do_sample
+                )[0]
+                ret.append(generated_text)
+            return ret
+
+
+def run_and_parse_llama(full_prompt, llama_client, config):
+    # just runs the chatgpt prompt, tries to parse the resulting JSON
+    completion = llama_client.get_response(full_prompt, int(config["FILTERING"]["num_samples"]), do_sample=True)
+    json_dicts = defaultdict(list)
+    for choice in completion:
+        out_text = choice
+        out_text = re.sub(r"\n+", "\n", out_text)
+        out_text = re.sub(r"(?<=\])[\s\S]*", "", out_text)
+        try:
+            out_text = eval(out_text)
+            for loaded_output in out_text:
+                try:
+                    json_dicts[loaded_output["ARXIVID"]].append(loaded_output)
+                except KeyError:
+                    pass
+        except json.JSONDecodeError:
+            pass
+        except SyntaxError:
+            pass
+
+    all_dict = []
+    for id, json_list in json_dicts.items():
+        try:
+            rel_score = sum([float(jdict["RELEVANCE"]) for jdict in json_list]) / float(
+                len(json_list)
+            )
+            nov_score = sum([float(jdict["NOVELTY"]) for jdict in json_list]) / float(
+                len(json_list)
+            )
+            new_dict = {
+                "ARXIVID": json_list[0]["ARXIVID"],
+                "COMMENT": json_list[0]["COMMENT"],
+                "RELEVANCE": rel_score,
+                "NOVELTY": nov_score,
+            }
+            all_dict.append(new_dict)
+        except KeyError:
+            pass
+    return all_dict, 0
+
+
 def run_and_parse_chatgpt(full_prompt, openai_client, config):
     # just runs the chatgpt prompt, tries to parse the resulting JSON
     completion = call_chatgpt(
@@ -96,12 +165,6 @@ def run_and_parse_chatgpt(full_prompt, openai_client, config):
                 loaded_output = json.loads(line)
                 json_dicts[loaded_output["ARXIVID"]].append(loaded_output)
             except Exception as ex:
-                if config["OUTPUT"].getboolean("debug_messages"):
-                    print("Exception happened " + str(ex))
-                    print("Failed to parse LM output as json")
-                    print(out_text)
-                    print("RAW output")
-                    print(completion.choices[0].message.content)
                 continue
     all_dict = []
     for id, json_list in json_dicts.items():
@@ -124,28 +187,28 @@ def run_and_parse_chatgpt(full_prompt, openai_client, config):
 def paper_to_string(paper_entry: Paper) -> str:
     # renders each paper into a string to be processed by GPT
     new_str = (
-        "ArXiv ID: "
-        + paper_entry.arxiv_id
-        + "\n"
-        + "Title: "
-        + paper_entry.title
-        + "\n"
-        + "Authors: "
-        + " and ".join(paper_entry.authors)
-        + "\n"
-        + "Abstract: "
-        + paper_entry.abstract[:4000]
+            "ArXiv ID: "
+            + paper_entry.arxiv_id
+            + "\n"
+            + "Title: "
+            + paper_entry.title
+            + "\n"
+            + "Authors: "
+            + " and ".join(paper_entry.authors)
+            + "\n"
+            + "Abstract: "
+            + paper_entry.abstract[:4000]
     )
     return new_str
 
 
 def batched(items, batch_size):
     # takes a list and returns a list of list with batch_size
-    return [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
+    return [items[i: i + batch_size] for i in range(0, len(items), batch_size)]
 
 
 def filter_papers_by_title(
-    papers: List[Paper], base_prompt: str, criterion: str
+        papers: List[Paper], base_prompt: str, criterion: str
 ) -> List[Paper]:
     filter_postfix = "Please identify any papers that you are absolutely sure your friend will not enjoy, formatted as a list of arxiv ids like [ID1, ID2, ID3..]"
     batches_of_papers = batched(papers, 20)
@@ -153,7 +216,7 @@ def filter_papers_by_title(
     for batch in batches_of_papers:
         papers_string = "".join([paper_to_titles(paper) for paper in batch])
         full_prompt = (
-            base_prompt + "\n " + criterion + "\n" + papers_string + filter_postfix
+                base_prompt + "\n " + criterion + "\n" + papers_string + filter_postfix
         )
         completion = call_chatgpt(full_prompt, "gpt-4")
         cost = calc_price("gpt-4", completion.usage)
@@ -176,7 +239,7 @@ def paper_to_titles(paper_entry: Paper) -> str:
 
 
 def run_on_batch(
-    paper_batch, base_prompt, criterion, postfix_prompt, openai_client, config
+        paper_batch, base_prompt, criterion, postfix_prompt, config, openai_client=None, llama_client=None
 ):
     batch_str = [paper_to_string(paper) for paper in paper_batch]
     full_prompt = "\n".join(
@@ -187,34 +250,41 @@ def run_on_batch(
             postfix_prompt,
         ]
     )
-    json_dicts, cost = run_and_parse_chatgpt(full_prompt, openai_client, config)
+    if config["SELECTION"].getboolean("run_openai"):
+        json_dicts, cost = run_and_parse_chatgpt(full_prompt, openai_client, config)
+    elif config["SELECTION"].getboolean("run_llama"):
+        json_dicts, cost = run_and_parse_llama(full_prompt, llama_client, config)
+    else:
+        raise NotImplementedError
     return json_dicts, cost
 
 
 def filter_by_gpt(
-    all_authors, papers, config, openai_client, all_papers, selected_papers, sort_dict
+        all_authors, papers, config, all_papers, selected_papers, sort_dict
 ):
+    assert not (config["SELECTION"].getboolean("run_openai") and config["SELECTION"].getboolean("run_llama"))
+    openai_client = OpenAI(api_key=OAI_KEY) if config["SELECTION"].getboolean("run_openai") else None
+    llama_client = LLaMaModel(model_name=config["SELECTION"]["model"]) \
+        if config["SELECTION"].getboolean("run_llama") else None
+
     # deal with config parsing
     with open("configs/base_prompt.txt", "r") as f:
         base_prompt = f.read()
     with open("configs/paper_topics.txt", "r") as f:
         criterion = f.read()
-    with open("configs/postfix_prompt.txt", "r") as f:
-        postfix_prompt = f.read()
-    all_cost = 0
     if config["SELECTION"].getboolean("run_openai"):
+        with open("configs/postfix_prompt.txt", "r") as f:
+            postfix_prompt = f.read()
+    else:
+        with open("configs/postfix_prompt_llama.txt", "r") as f:
+            postfix_prompt = f.read()
+
+    all_cost = 0
+    if config["SELECTION"].getboolean("run_openai") or config["SELECTION"].getboolean("run_llama"):
         # filter first by hindex of authors to reduce costs.
         paper_list = filter_papers_by_hindex(all_authors, papers, config)
-        if config["OUTPUT"].getboolean("debug_messages"):
-            print(str(len(paper_list)) + " papers after hindex filtering")
         cost = 0
         # paper_list, cost = filter_papers_by_title(paper_list, base_prompt, criterion)
-        if config["OUTPUT"].getboolean("debug_messages"):
-            print(
-                str(len(paper_list))
-                + " papers after title filtering with cost of $"
-                + str(cost)
-            )
         all_cost += cost
 
         # batch the remaining papers and invoke GPT
@@ -223,15 +293,17 @@ def filter_by_gpt(
         for batch in tqdm(batch_of_papers):
             scored_in_batch = []
             json_dicts, cost = run_on_batch(
-                batch, base_prompt, criterion, postfix_prompt, openai_client, config
+                batch, base_prompt, criterion, postfix_prompt, config, openai_client, llama_client
             )
             all_cost += cost
             for jdict in json_dicts:
+                if jdict["ARXIVID"] not in all_papers.keys():
+                    continue
                 if (
-                    int(jdict["RELEVANCE"])
-                    >= int(config["FILTERING"]["relevance_cutoff"])
-                    and jdict["NOVELTY"] >= int(config["FILTERING"]["novelty_cutoff"])
-                    and jdict["ARXIVID"] in all_papers
+                        int(jdict["RELEVANCE"])
+                        >= int(config["FILTERING"]["relevance_cutoff"])
+                        and jdict["NOVELTY"] >= int(config["FILTERING"]["novelty_cutoff"])
+                        and jdict["ARXIVID"] in all_papers
                 ):
                     selected_papers[jdict["ARXIVID"]] = {
                         **dataclasses.asdict(all_papers[jdict["ARXIVID"]]),
@@ -249,31 +321,32 @@ def filter_by_gpt(
                     }
                 )
             scored_batches.append(scored_in_batch)
-        if config["OUTPUT"].getboolean("dump_debug_file"):
-            with open(
-                config["OUTPUT"]["output_path"] + "gpt_paper_batches.debug.json", "w"
-            ) as outfile:
-                json.dump(scored_batches, outfile, cls=EnhancedJSONEncoder, indent=4)
-        if config["OUTPUT"].getboolean("debug_messages"):
-            print("Total cost: $" + str(all_cost))
 
 
-if __name__ == "__main__":
+def main():
     config = configparser.ConfigParser()
     config.read("configs/config.ini")
-    S2_API_KEY = os.environ.get("S2_KEY")
-    OAI_KEY = os.environ.get("OAI_KEY")
-    openai_client = OpenAI(api_key=OAI_KEY)
+    os.makedirs(config["OUTPUT"]["output_path"], exist_ok=True)
+
+    assert not (config["SELECTION"].getboolean("run_openai") and config["SELECTION"].getboolean("run_llama"))
+    openai_client = OpenAI(api_key=OAI_KEY) if config["SELECTION"].getboolean("run_openai") else None
+    llama_client = LLaMaModel(model_name=config["SELECTION"]["model"]) \
+        if config["SELECTION"].getboolean("run_llama") else None
+
     # deal with config parsing
     with open("configs/base_prompt.txt", "r") as f:
         base_prompt = f.read()
     with open("configs/paper_topics.txt", "r") as f:
         criterion = f.read()
-    with open("configs/postfix_prompt.txt", "r") as f:
-        postfix_prompt = f.read()
+    if config["SELECTION"].getboolean("run_openai"):
+        with open("configs/postfix_prompt.txt", "r") as f:
+            postfix_prompt = f.read()
+    else:
+        with open("configs/postfix_prompt_llama.txt", "r") as f:
+            postfix_prompt = f.read()
+
     # loads papers from 'in/debug_papers.json' and filters them
-    # with open("in/debug_papers.json", "r") as f:
-    with open("in/gpt_paper_batches.debug-11-14.json", "r") as f:
+    with open("in/debug_papers.json", "r") as f:
         paper_list_in_dict = json.load(f)
     papers = [
         [
@@ -287,18 +360,21 @@ if __name__ == "__main__":
         ]
         for batch in paper_list_in_dict
     ]
+
     all_papers = {}
     paper_outputs = {}
     sort_dict = {}
     total_cost = 0
     for batch in tqdm(papers):
         json_dicts, cost = run_on_batch(
-            batch, base_prompt, criterion, postfix_prompt, openai_client, config
+            batch, base_prompt, criterion, postfix_prompt, config, openai_client, llama_client
         )
         total_cost += cost
         for paper in batch:
             all_papers[paper.arxiv_id] = paper
         for jdict in json_dicts:
+            if jdict["ARXIVID"] not in all_papers.keys():
+                continue
             paper_outputs[jdict["ARXIVID"]] = {
                 **dataclasses.asdict(all_papers[jdict["ARXIVID"]]),
                 **jdict,
@@ -317,6 +393,10 @@ if __name__ == "__main__":
     selected_papers = {key: paper_outputs[key] for key in sorted_keys}
 
     with open(
-        config["OUTPUT"]["output_path"] + "filter_paper_test.debug.json", "w"
+            config["OUTPUT"]["output_path"] + "filter_paper_test.debug.json", "w"
     ) as outfile:
         json.dump(selected_papers, outfile, cls=EnhancedJSONEncoder, indent=4)
+
+
+if __name__ == "__main__":
+    main()
